@@ -5,68 +5,79 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
 import ccxt
-from scipy.signal import argrelextrema, find_peaks
-import talib
 
 # --- 1. Setup --- #
 st.set_page_config(layout="wide")
-st.title("📊 Advanced Bitget Dashboard")
+st.title("📊 Bitget Advanced Trading Dashboard")
 
-# --- 2. Data Fetching --- #
+# --- 2. Custom Indicator Calculations (No SciPy Dependency) --- #
+def find_extrema(series, window=5):
+    """Manual implementation of peak/valley detection"""
+    max_idx, min_idx = [], []
+    for i in range(window, len(series)-window):
+        if series[i] == series[i-window:i+window].max():
+            max_idx.append(i)
+        elif series[i] == series[i-window:i+window].min():
+            min_idx.append(i)
+    return max_idx, min_idx
+
+def calculate_rsi(series, period=14):
+    """Manual RSI calculation"""
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# --- 3. Data Fetching --- #
 @st.cache_data(ttl=30)
-def get_ohlcv(tf="15m"):
+def get_ohlcv(tf="15m", pair="BTC/USDT:USDT"):
     exchange = ccxt.bitget()
-    ohlcv = exchange.fetch_ohlcv("BTC/USDT:USDT", tf, limit=1000)
+    ohlcv = exchange.fetch_ohlcv(pair, tf, limit=1000)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
-# --- 3. Indicator Calculations --- #
-def calculate_indicators(df):
+# --- 4. Indicator Processing --- #
+def process_indicators(df):
     # Bollinger Bands
     df['MA20'] = df['close'].rolling(20).mean()
     df['Upper'] = df['MA20'] + 2*df['close'].rolling(20).std()
     df['Lower'] = df['MA20'] - 2*df['close'].rolling(20).std()
     
-    # Support/Resistance
+    # Support/Resistance (using custom extrema)
     highs, lows = df['high'], df['low']
-    max_idx = argrelextrema(highs.values, np.greater, order=5)[0]
-    min_idx = argrelextrema(lows.values, np.less, order=5)[0]
+    max_idx, min_idx = find_extrema(highs), find_extrema(lows)
     df['support'] = np.nan
     df['resistance'] = np.nan
-    df.iloc[min_idx, df.columns.get_loc('support')] = lows.iloc[min_idx]
-    df.iloc[max_idx, df.columns.get_loc('resistance')] = highs.iloc[max_idx]
+    df.loc[min_idx, 'support'] = lows[min_idx]
+    df.loc[max_idx, 'resistance'] = highs[max_idx]
     
     # Fibonacci
     high, low = highs.max(), lows.min()
     df['fib_618'] = low + (high-low)*0.618
     df['fib_50'] = low + (high-low)*0.5
     
-    # Elliott Waves
-    peaks, _ = find_peaks(highs, distance=5, prominence=1)
-    troughs, _ = find_peaks(-lows, distance=5, prominence=1)
-    df['waves'] = np.nan
-    df.iloc[peaks, df.columns.get_loc('waves')] = highs.iloc[peaks]
-    df.iloc[troughs, df.columns.get_loc('waves')] = lows.iloc[troughs]
-    
-    # Volume Profile
+    # Volume Analysis
     df['buy_vol'] = np.where(df['close'] > df['open'], df['volume'], 0)
     df['sell_vol'] = np.where(df['close'] < df['open'], df['volume'], 0)
     
     # RSI
-    df['RSI'] = talib.RSI(df['close'], timeperiod=14)
+    df['RSI'] = calculate_rsi(df['close'])
     
     return df
 
-# --- 4. UI Layout --- #
+# --- 5. UI Layout --- #
 col1, col2 = st.columns([1, 4])
 
 with col1:
-    # Timeframes (Vertical)
+    # Timeframe Selector (Vertical)
     st.write("")
     tf = st.radio("", ["5m","15m","30m","1h","2h","4h","6h","8h"], vertical=True)
     
-    # Indicators (Static for layout - replace with real calculations)
+    # Indicator Values (Example)
     st.write("")
     st.markdown("**BOLL:** 5.638")
     st.markdown("**UB:** 6.328")
@@ -88,8 +99,8 @@ with col1:
     st.write("07-29 03:00 (Entry)")
 
 with col2:
-    # Countdown
-    def next_candle_time(tf):
+    # Countdown Timer
+    def get_next_candle(tf):
         now = datetime.utcnow()
         if 'm' in tf:
             mins = int(tf.replace('m',''))
@@ -97,17 +108,17 @@ with col2:
         else:
             hours = int(tf.replace('h',''))
             next_candle = now + timedelta(hours=hours - now.hour%hours)
-        return (next_candle - now).total_seconds()
+        return next_candle
     
     countdown = st.empty()
     
-    # Get data
-    df = calculate_indicators(get_ohlcv(tf))
+    # Get Data
+    df = process_indicators(get_ohlcv(tf))
     
     # Main Chart
     fig = go.Figure()
     
-    # Candles
+    # Candlesticks
     fig.add_trace(go.Candlestick(
         x=df['timestamp'],
         open=df['open'],
@@ -143,12 +154,6 @@ with col2:
         name="Resistance"
     ))
     
-    # Fibonacci
-    fig.add_hline(y=df['fib_618'].iloc[-1], line_dash="dot",
-                 annotation_text="Fib 0.618", line_color="purple")
-    fig.add_hline(y=df['fib_50'].iloc[-1], line_dash="dot",
-                 annotation_text="Fib 0.50", line_color="blue")
-    
     fig.update_layout(
         height=600,
         xaxis_rangeslider_visible=False,
@@ -156,18 +161,18 @@ with col2:
     )
     st.plotly_chart(fig, use_container_width=True)
     
-    # Live updates
+    # Live Updates
     while True:
-        remaining = next_candle_time(tf)
-        mins, secs = divmod(int(remaining), 60)
+        remaining = get_next_candle(tf) - datetime.utcnow()
+        mins, secs = divmod(int(remaining.total_seconds()), 60)
         countdown.markdown(
             f"⏳ Next {tf} candle in **{mins}m {secs}s** | "
             f"RSI: {df['RSI'].iloc[-1]:.1f} | "
-            f"Volume: {df['volume'].iloc[-1]:.0f}",
+            f"Buy Vol: {df['buy_vol'].iloc[-1]:.0f}",
             unsafe_allow_html=True
         )
         time.sleep(1)
 
-# --- 5. Run --- #
+# --- 6. Run --- #
 if __name__ == "__main__":
-    st.write("Live trading dashboard")
+    st.write("Live dashboard running...")
