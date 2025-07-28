@@ -12,10 +12,13 @@ st.title("📊 Bitget Advanced Trading Dashboard")
 
 # --- 2. Fixed Extrema Detection --- #
 def find_extrema(series, window=5):
-    """Robust peak/valley detection that returns proper indices"""
+    """Robust peak/valley detection that handles both Series and numpy arrays"""
+    if isinstance(series, np.ndarray):
+        series = pd.Series(series)
+    
     max_idx = (series.rolling(window, center=True).max() == series).astype(int)
     min_idx = (series.rolling(window, center=True).min() == series).astype(int)
-    return np.where(max_idx)[0], np.where(min_idx)[0]  # Returns numpy arrays
+    return np.where(max_idx)[0], np.where(min_idx)[0]
 
 # --- 3. Data Fetching --- #
 @st.cache_data(ttl=30)
@@ -34,29 +37,25 @@ def process_indicators(df):
     df['Lower'] = df['MA20'] - 2*df['close'].rolling(20).std()
     
     # Support/Resistance (Fixed Implementation)
-    highs, lows = df['high'].values, df['low'].values
-    max_idx, min_idx = find_extrema(highs), find_extrema(lows)
+    highs, lows = df['high'], df['low']
+    max_idx, min_idx = find_extrema(highs.values), find_extrema(lows.values)
     
     df['support'] = np.nan
     df['resistance'] = np.nan
     
     if len(min_idx[0]) > 0:
-        df.loc[min_idx[0], 'support'] = lows[min_idx[0]]
+        df.loc[min_idx[0], 'support'] = lows.iloc[min_idx[0]]
     if len(max_idx[0]) > 0:
-        df.loc[max_idx[0], 'resistance'] = highs[max_idx[0]]
+        df.loc[max_idx[0], 'resistance'] = highs.iloc[max_idx[0]]
     
     # Fibonacci Levels
     high, low = highs.max(), lows.min()
     df['fib_618'] = low + (high-low)*0.618
     df['fib_50'] = low + (high-low)*0.5
     
-    # Volume Analysis
-    df['buy_vol'] = np.where(df['close'] > df['open'], df['volume'], 0)
-    df['sell_vol'] = np.where(df['close'] < df['open'], df['volume'], 0)
-    
     return df
 
-# --- 5. UI Layout (Same as Before) --- #
+# --- 5. UI Layout --- #
 col1, col2 = st.columns([1, 4])
 
 with col1:
@@ -79,11 +78,6 @@ with col1:
     st.write("4.838 (Fib 0.5)")
     st.write("3.402 (Support)")
     st.write("1.966 (Target)")
-    st.write("07-26 23:00 (Wave 3)")
-    st.write("07-27 12:00 (Wave 4)")
-    st.write("07-28 01:00 (Wave 5)")
-    st.write("07-28 14:00 (Correction)")
-    st.write("07-29 03:00 (Entry)")
 
 with col2:
     def get_next_candle(tf):
@@ -119,19 +113,18 @@ with col2:
         name="Lower Band"
     ))
     
-    # Only plot valid support/resistance points
     if 'support' in df:
         fig.add_trace(go.Scatter(
-            x=df['timestamp'],
-            y=df['support'],
+            x=df['timestamp'][df['support'].notna()],
+            y=df['support'][df['support'].notna()],
             mode='markers',
             marker=dict(color='green', size=8),
             name="Support"
         ))
     if 'resistance' in df:
         fig.add_trace(go.Scatter(
-            x=df['timestamp'],
-            y=df['resistance'],
+            x=df['timestamp'][df['resistance'].notna()],
+            y=df['resistance'][df['resistance'].notna()],
             mode='markers',
             marker=dict(color='red', size=8),
             name="Resistance"
