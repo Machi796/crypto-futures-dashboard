@@ -1,4 +1,8 @@
 streamlit
 ccxt
 pandas
+numpy
 plotly
+scipy
+talib
+python-binance
