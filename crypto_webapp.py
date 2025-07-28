@@ -1,4 +1,3 @@
-
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -19,8 +18,14 @@ exchange = ccxt.bitget({
 markets = exchange.load_markets()
 futures_pairs = sorted([m for m in markets if '/USDT' in m and markets[m]['type'] == 'swap'])
 
-# UI - Pair & Timeframe Selection
-pair = st.selectbox("🔗 Select Futures Pair", futures_pairs, index=futures_pairs.index("BTC/USDT"))
+# Debug: show how many pairs loaded
+st.caption(f"Loaded {len(futures_pairs)} Bitget futures pairs.")
+
+# Safe default pair selection
+default_pair = "BTC/USDT" if "BTC/USDT" in futures_pairs else futures_pairs[0]
+pair = st.selectbox("🔗 Select Futures Pair", futures_pairs, index=futures_pairs.index(default_pair))
+
+# Timeframe selection
 timeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w']
 tf = st.selectbox("🕒 Select Timeframe", timeframes)
 
