@@ -10,7 +10,7 @@ import ccxt
 st.set_page_config(layout="wide")
 st.title("📊 Bitget Advanced Trading Dashboard")
 
-# --- 2. Custom Indicator Calculations (No SciPy Dependency) --- #
+# --- 2. Custom Indicator Calculations --- #
 def find_extrema(series, window=5):
     """Manual implementation of peak/valley detection"""
     max_idx, min_idx = [], []
@@ -47,7 +47,7 @@ def process_indicators(df):
     df['Upper'] = df['MA20'] + 2*df['close'].rolling(20).std()
     df['Lower'] = df['MA20'] - 2*df['close'].rolling(20).std()
     
-    # Support/Resistance (using custom extrema)
+    # Support/Resistance
     highs, lows = df['high'], df['low']
     max_idx, min_idx = find_extrema(highs), find_extrema(lows)
     df['support'] = np.nan
@@ -73,11 +73,16 @@ def process_indicators(df):
 col1, col2 = st.columns([1, 4])
 
 with col1:
-    # Timeframe Selector (Vertical)
+    # Timeframe Selector (Vertical) - FIXED RADIO BUTTON
     st.write("")
-    tf = st.radio("", ["5m","15m","30m","1h","2h","4h","6h","8h"], vertical=True)
+    tf = st.radio(
+        "Timeframe",
+        options=["5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h"],
+        index=1,  # Default to 15m
+        key="timeframe_selector"
+    )
     
-    # Indicator Values (Example)
+    # Indicator Values
     st.write("")
     st.markdown("**BOLL:** 5.638")
     st.markdown("**UB:** 6.328")
@@ -138,20 +143,6 @@ with col2:
         x=df['timestamp'], y=df['Lower'],
         line=dict(color='blue', width=1),
         name="Lower Band"
-    ))
-    
-    # Support/Resistance
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['support'],
-        mode='markers',
-        marker=dict(color='green', size=8),
-        name="Support"
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['resistance'],
-        mode='markers',
-        marker=dict(color='red', size=8),
-        name="Resistance"
     ))
     
     fig.update_layout(
