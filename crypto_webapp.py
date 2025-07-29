@@ -1,66 +1,73 @@
 import streamlit as st
 import pandas as pd
-import ccxt
 import plotly.graph_objs as go
+import ccxt
+import time
+from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide")
-st.title("📈 Crypto Futures Dashboard — Bitget")
+st.set_page_config(page_title="Crypto Futures Dashboard", layout="wide")
+st.title("📈 Crypto Futures Dashboard")
 
+# Initialize exchange
 exchange = ccxt.bitget()
 markets = exchange.load_markets()
 
-# Filter only USDT perpetual futures markets
-futures_pairs = [m for m in markets if markets[m].get("contract", False) and ":USDT" in m]
-futures_pairs.sort()
+# Filter for USDT perpetual futures pairs
+futures_pairs = [symbol for symbol in markets if symbol.endswith("_UMCBL")]
 
-# Set default symbol safely
-default_symbol = "BTCUSDT_UMCBL" if "BTCUSDT_UMCBL" in futures_pairs else futures_pairs[0]
-symbol = st.selectbox("Select a futures pair:", futures_pairs, index=futures_pairs.index(default_symbol))
+# Default pair logic
+default_pair = "BTCUSDT_UMCBL" if "BTCUSDT_UMCBL" in futures_pairs else futures_pairs[0]
+symbol = st.selectbox("Select a futures pair:", sorted(futures_pairs), index=sorted(futures_pairs).index(default_pair) if default_pair in futures_pairs else 0)
 
 # Timeframe selection
 timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 timeframe = st.selectbox("Select timeframe:", timeframes, index=4)
 
 # Load OHLCV data
-data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
-df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+def fetch_ohlcv(pair, tf):
+    try:
+        ohlcv = exchange.fetch_ohlcv(pair, timeframe=tf, limit=100)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        st.error(f"Failed to load data for {pair} at {tf}: {e}")
+        return pd.DataFrame()
 
-# Live price
-live_ticker = exchange.fetch_ticker(symbol)
-live_price = live_ticker["last"]
-st.markdown(f"## 💰 Live Price: **{live_price:.4f} USDT**")
+data = fetch_ohlcv(symbol, timeframe)
 
-# Candlestick chart
-fig = go.Figure()
-fig.add_trace(go.Candlestick(
-    x=df["timestamp"],
-    open=df["open"],
-    high=df["high"],
-    low=df["low"],
-    close=df["close"],
-    name="Candles"
-))
+if not data.empty:
+    st.subheader(f"Live chart: {symbol} – {timeframe}")
+    
+    fig = go.Figure(data=[
+        go.Candlestick(
+            x=data['timestamp'],
+            open=data['open'],
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            name='Candles'
+        )
+    ])
+    fig.update_layout(xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig, use_container_width=True)
 
-fig.update_layout(
-    xaxis_rangeslider_visible=False,
-    title=f"{symbol} — {timeframe} Chart",
-    yaxis_title="Price (USDT)",
-    xaxis_title="Time",
-    dragmode="pan",
-    height=600
-)
+    # Live price
+    latest_price = data['close'].iloc[-1]
+    st.metric(label="Live Price", value=f"{latest_price:.4f} USDT")
 
-st.plotly_chart(fig, use_container_width=True)
+    # Countdown timer for next candle
+    now = pd.Timestamp.utcnow()
+    tf_minutes = int(timeframe[:-1]) if 'm' in timeframe else int(timeframe[:-1]) * 60 if 'h' in timeframe else 1440
+    last_timestamp = data['timestamp'].iloc[-1]
+    next_candle = last_timestamp + timedelta(minutes=tf_minutes)
 
-# Countdown to next candle
-import time
-duration = exchange.timeframes[timeframe]
-interval = pd.to_timedelta(duration.replace("m", "min").replace("h", "hour").replace("d", "day"))
-last_candle = df["timestamp"].iloc[-1]
-next_candle = last_candle + interval
-remaining = (next_candle - pd.Timestamp.utcnow()).total_seconds()
-
-if remaining > 0:
-    mins, secs = divmod(int(remaining), 60)
-    st.info(f"⏳ Next candle in: {mins:02d}:{secs:02d}")
+    if pd.notnull(next_candle):
+        remaining = (next_candle - now).total_seconds()
+        remaining = max(0, remaining)
+        mins, secs = divmod(int(remaining), 60)
+        st.info(f"⏳ Time until next candle: {mins:02d}:{secs:02d}")
+    else:
+        st.warning("Next candle time unavailable.")
+else:
+    st.warning("No data available to display chart.")
