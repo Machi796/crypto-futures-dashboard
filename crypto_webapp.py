@@ -1,76 +1,56 @@
 import streamlit as st
-import pandas as pd
 import ccxt
+import pandas as pd
 import plotly.graph_objects as go
-import time
 from datetime import datetime, timedelta
 
-# --------- CONFIG ---------
+# Page config
 st.set_page_config(page_title="Crypto Futures Dashboard", layout="wide")
+st.title("📊 Crypto Futures Dashboard (Bitget Perpetual)")
 
-# --------- HEADER ---------
-st.markdown("""
-    <style>
-    .main-title {
-        font-size: 36px;
-        font-weight: bold;
-        text-align: center;
-        margin-bottom: 0px;
-    }
-    .live-price {
-        font-size: 20px;
-        color: lime;
-        text-align: center;
-        margin-top: 5px;
-    }
-    .timer {
-        font-size: 14px;
-        color: gray;
-        text-align: center;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# Init exchange
+exchange = ccxt.bitget()
+markets = exchange.load_markets()
 
-st.markdown('<div class="main-title">📊 Crypto Futures Dashboard (Bitget)</div>', unsafe_allow_html=True)
+# Filter USDT perpetual futures
+futures_pairs = [symbol for symbol in markets if 
+    markets[symbol]['linear'] and 
+    markets[symbol]['contract'] and 
+    symbol.endswith("_UMCBL")]
 
-# --------- SETTINGS ---------
-timeframes = {
-    '1m': 60,
-    '5m': 300,
-    '15m': 900,
-    '1h': 3600,
-    '4h': 14400,
-    '1d': 86400,
-    '1w': 604800
-}
+# Symbol selection
+symbol = st.selectbox("Select a futures pair:", sorted(futures_pairs), index=sorted(futures_pairs).index("BTCUSDT_UMCBL"))
 
-pair = st.sidebar.text_input("Enter Pair (e.g., BTC/USDT)", "BTC/USDT")
-tf = st.sidebar.selectbox("Timeframe", list(timeframes.keys()), index=3)
+# Timeframe selection
+timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
+timeframe = st.selectbox("Select timeframe:", timeframes, index=3)
 
-# --------- FETCH DATA ---------
-def get_ohlcv(symbol, timeframe):
-    exchange = ccxt.bitget()
-    markets = exchange.load_markets()
-    market = symbol.replace("/", "-").upper()
-    ohlcv = exchange.fetch_ohlcv(market, timeframe)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+# Fetch OHLCV data
+def get_ohlcv(symbol, tf):
+    try:
+        data = exchange.fetch_ohlcv(symbol, tf)
+        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        st.error(f"Failed to load data for {symbol} at {tf}: {e}")
+        return pd.DataFrame()
 
-try:
-    df = get_ohlcv(pair, tf)
-    current_price = df.iloc[-1]['close']
-    st.markdown(f'<div class="live-price">Live Price: {current_price:.2f} USDT</div>', unsafe_allow_html=True)
+# Load data
+df = get_ohlcv(symbol, timeframe)
 
-    # Countdown Timer
-    last_ts = df['timestamp'].iloc[-1]
-    tf_seconds = timeframes[tf]
-    next_candle = last_ts + timedelta(seconds=tf_seconds)
+if not df.empty:
+    # Live price
+    live_price = df["close"].iloc[-1]
+    st.metric(label=f"💰 {symbol} Price (Live)", value=f"${live_price:,.2f}")
+
+    # Countdown timer for next candle
+    tf_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    minutes = tf_map.get(timeframe, 60)
+    last_ts = df["timestamp"].iloc[-1]
+    next_candle = last_ts + timedelta(minutes=minutes)
     remaining = (next_candle.to_pydatetime() - datetime.utcnow()).total_seconds()
-
-    if remaining > 0:
-        mins, secs = divmod(int(remaining), 60)
-        st.markdown(f'<div class="timer">Next candle in: {mins}m {secs}s</div>', unsafe_allow_html=True)
+    st.caption(f"🕒 Next candle in: {int(remaining // 60)} min {int(remaining % 60)} sec")
 
     # Plot chart
     fig = go.Figure(data=[
@@ -80,21 +60,22 @@ try:
             high=df['high'],
             low=df['low'],
             close=df['close'],
-            name="Candles"
+            name='Candles'
         )
     ])
 
     fig.update_layout(
+        title=f"{symbol} Candlestick Chart ({timeframe})",
         xaxis_rangeslider_visible=False,
-        xaxis_title='Time',
-        yaxis_title='Price (USDT)',
-        template="plotly_dark",
-        dragmode='zoom',
+        xaxis_title="Time",
+        yaxis_title="Price",
         height=600,
-        margin=dict(l=20, r=20, t=40, b=20)
+        margin=dict(t=50, b=50),
+        xaxis=dict(type="date", rangeslider_visible=False),
+        yaxis=dict(fixedrange=False),
+        hovermode="x unified",
     )
 
     st.plotly_chart(fig, use_container_width=True)
-
-except Exception as e:
-    st.error(f"Failed to load data for {pair} at {tf}: {e}")
+else:
+    st.warning("No data to display.")
