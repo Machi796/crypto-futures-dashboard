@@ -1,147 +1,106 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import time
 import ccxt
+import pandas as pd
+import plotly.graph_objects as go
+import numpy as np
+import ta
 
-# --- 1. Setup --- #
-st.set_page_config(layout="wide")
-st.title("📊 Bitget Advanced Trading Dashboard")
+st.set_page_config(page_title="Crypto Futures Pro Dashboard", layout="wide")
+st.title("💹 Crypto Futures Pro Dashboard — Bitget USDT-M")
 
-# --- 2. Fixed Extrema Detection --- #
-def find_extrema(series, window=5):
-    """Robust peak/valley detection that handles both Series and numpy arrays"""
-    if isinstance(series, np.ndarray):
-        series = pd.Series(series)
-    
-    max_idx = (series.rolling(window, center=True).max() == series).astype(int)
-    min_idx = (series.rolling(window, center=True).min() == series).astype(int)
-    return np.where(max_idx)[0], np.where(min_idx)[0]
-
-# --- 3. Data Fetching --- #
-@st.cache_data(ttl=30)
-def get_ohlcv(tf="15m", pair="BTC/USDT:USDT"):
+# --- Get all USDT futures pairs from Bitget
+@st.cache_data(ttl=600)
+def get_futures_pairs():
     exchange = ccxt.bitget()
-    ohlcv = exchange.fetch_ohlcv(pair, tf, limit=1000)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    markets = exchange.load_markets()
+    return sorted([m for m in markets if "/USDT" in m and markets[m]["contract"]])
+
+# --- Fetch OHLCV data
+def get_ohlcv(pair, tf, limit=500):
+    exchange = ccxt.bitget()
+    data = exchange.fetch_ohlcv(pair, timeframe=tf, limit=limit)
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df
 
-# --- 4. Fixed Indicator Processing --- #
-def process_indicators(df):
-    # Bollinger Bands
-    df['MA20'] = df['close'].rolling(20).mean()
-    df['Upper'] = df['MA20'] + 2*df['close'].rolling(20).std()
-    df['Lower'] = df['MA20'] - 2*df['close'].rolling(20).std()
-    
-    # Support/Resistance (Fixed Implementation)
-    highs, lows = df['high'], df['low']
-    max_idx, min_idx = find_extrema(highs.values), find_extrema(lows.values)
-    
-    df['support'] = np.nan
-    df['resistance'] = np.nan
-    
-    if len(min_idx[0]) > 0:
-        df.loc[min_idx[0], 'support'] = lows.iloc[min_idx[0]]
-    if len(max_idx[0]) > 0:
-        df.loc[max_idx[0], 'resistance'] = highs.iloc[max_idx[0]]
-    
-    # Fibonacci Levels
-    high, low = highs.max(), lows.min()
-    df['fib_618'] = low + (high-low)*0.618
-    df['fib_50'] = low + (high-low)*0.5
-    
+# --- Fibonacci retracement levels
+def draw_fib(df):
+    high = df["high"].max()
+    low = df["low"].min()
+    diff = high - low
+    levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+    lines = []
+    for lvl in levels:
+        y = high - diff * lvl
+        lines.append(dict(type="line", xref="paper", x0=0, x1=1, y0=y, y1=y,
+                          line=dict(color="purple", dash="dot"), name=f"{lvl*100:.1f}%"))
+    return lines
+
+# --- Support & Resistance Zones
+def get_sr_levels(df, threshold=0.02):
+    levels = []
+    for i in range(2, len(df) - 2):
+        if df["low"][i] < df["low"][i - 1] and df["low"][i] < df["low"][i + 1]:
+            levels.append(df["low"][i])
+        elif df["high"][i] > df["high"][i - 1] and df["high"][i] > df["high"][i + 1]:
+            levels.append(df["high"][i])
+    levels = sorted(set(levels))
+    # Filter nearby zones
+    filtered = []
+    for level in levels:
+        if not any(abs(level - l) / l < threshold for l in filtered):
+            filtered.append(level)
+    return filtered
+
+# --- Add RSI & MACD
+def add_indicators(df):
+    rsi = ta.momentum.RSIIndicator(df["close"]).rsi()
+    macd = ta.trend.MACD(df["close"])
+    df["rsi"] = rsi
+    df["macd"] = macd.macd()
+    df["macd_signal"] = macd.macd_signal()
     return df
 
-# --- 5. UI Layout --- #
-col1, col2 = st.columns([1, 4])
+# --- UI Sidebar
+with st.sidebar:
+    pair = st.selectbox("Select Perpetual Futures Pair", get_futures_pairs(), index=0)
+    tf = st.selectbox("Select Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
+    st.markdown("Made for Bitget USDT-margined futures traders 💹")
 
+df = get_ohlcv(pair, tf)
+df = add_indicators(df)
+
+# --- Plot Chart
+fig = go.Figure()
+
+# Candlesticks
+fig.add_trace(go.Candlestick(
+    x=df["timestamp"],
+    open=df["open"],
+    high=df["high"],
+    low=df["low"],
+    close=df["close"],
+    name="Price"
+))
+
+# Fibonacci
+fig.update_layout(shapes=draw_fib(df))
+
+# SR Zones
+for lvl in get_sr_levels(df):
+    fig.add_hline(y=lvl, line=dict(color="gray", width=1, dash="dot"))
+
+# Layout
+fig.update_layout(title=f"{pair} — {tf}", xaxis_rangeslider_visible=False, height=700)
+st.plotly_chart(fig, use_container_width=True)
+
+# --- RSI & MACD Charts
+st.subheader("📊 RSI & MACD Indicators")
+
+col1, col2 = st.columns(2)
 with col1:
-    st.write("")
-    tf = st.radio(
-        "Timeframe",
-        options=["5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h"],
-        index=1,
-        key="timeframe_selector"
-    )
-    
-    # Display static values for layout
-    st.write("")
-    st.markdown("**BOLL:** 5.638")
-    st.markdown("**UB:** 6.328")
-    st.markdown("**LB:** 4.949")
-    st.write("7.710 (Resistance)")
-    st.write("6.773 (Fib 0.618)")
-    st.write("5.946 (Pivot)")
-    st.write("4.838 (Fib 0.5)")
-    st.write("3.402 (Support)")
-    st.write("1.966 (Target)")
-
+    st.line_chart(df.set_index("timestamp")["rsi"], height=200)
 with col2:
-    def get_next_candle(tf):
-        now = datetime.utcnow()
-        if 'm' in tf:
-            mins = int(tf.replace('m',''))
-            next_candle = now + timedelta(minutes=mins - now.minute%mins)
-        else:
-            hours = int(tf.replace('h',''))
-            next_candle = now + timedelta(hours=hours - now.hour%hours)
-        return next_candle
-    
-    countdown = st.empty()
-    df = process_indicators(get_ohlcv(tf))
-    
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name="Price"
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['Upper'],
-        line=dict(color='red', width=1),
-        name="Upper Band"
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['Lower'],
-        line=dict(color='blue', width=1),
-        name="Lower Band"
-    ))
-    
-    if 'support' in df:
-        fig.add_trace(go.Scatter(
-            x=df['timestamp'][df['support'].notna()],
-            y=df['support'][df['support'].notna()],
-            mode='markers',
-            marker=dict(color='green', size=8),
-            name="Support"
-        ))
-    if 'resistance' in df:
-        fig.add_trace(go.Scatter(
-            x=df['timestamp'][df['resistance'].notna()],
-            y=df['resistance'][df['resistance'].notna()],
-            mode='markers',
-            marker=dict(color='red', size=8),
-            name="Resistance"
-        ))
-    
-    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    while True:
-        remaining = get_next_candle(tf) - datetime.utcnow()
-        mins, secs = divmod(int(remaining.total_seconds()), 60)
-        countdown.markdown(
-            f"⏳ Next {tf} candle in **{mins}m {secs}s** | "
-            f"Price: {df['close'].iloc[-1]:.4f}",
-            unsafe_allow_html=True
-        )
-        time.sleep(1)
+    st.line_chart(df.set_index("timestamp")[["macd", "macd_signal"]], height=200)
 
-if __name__ == "__main__":
-    st.write("Live dashboard running...")
+st.success("Core TA tools loaded ✅ — Elliott Wave, CME gaps & projections coming next.")
