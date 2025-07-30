@@ -1,73 +1,73 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objs as go
+import plotly.graph_objects as go
 import ccxt
-import time
+import numpy as np
+import ta
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Crypto Futures Dashboard", layout="wide")
-st.title("📈 Crypto Futures Dashboard")
+st.set_page_config(layout="wide")
+st.title("📈 Crypto Futures Dashboard (Intraday Pro Pack)")
 
-# Initialize exchange
-exchange = ccxt.bitget()
-markets = exchange.load_markets()
+# Initialize Bitget futures market
+bitget = ccxt.bitget()
+markets = bitget.load_markets()
+symbols = [s for s in markets if '/USDT:USDT' in s and 'SWAP' in markets[s]['id']]
 
-# Filter for USDT perpetual futures pairs
-futures_pairs = [symbol for symbol in markets if symbol.endswith("_UMCBL")]
+# Sidebar - Coin and Timeframe Selection
+symbol = st.sidebar.selectbox("Select Futures Pair", sorted(symbols))
+timeframe = st.sidebar.selectbox("Select Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
 
-# Default pair logic
-default_pair = "BTCUSDT_UMCBL" if "BTCUSDT_UMCBL" in futures_pairs else futures_pairs[0]
-symbol = st.selectbox("Select a futures pair:", sorted(futures_pairs), index=sorted(futures_pairs).index(default_pair) if default_pair in futures_pairs else 0)
+# Fetch OHLCV data
+def get_ohlcv(symbol, timeframe):
+    ohlcv = bitget.fetch_ohlcv(symbol, timeframe=timeframe, limit=500)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
 
-# Timeframe selection
-timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
-timeframe = st.selectbox("Select timeframe:", timeframes, index=4)
+df = get_ohlcv(symbol, timeframe)
 
-# Load OHLCV data
-def fetch_ohlcv(pair, tf):
-    try:
-        ohlcv = exchange.fetch_ohlcv(pair, timeframe=tf, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-    except Exception as e:
-        st.error(f"Failed to load data for {pair} at {tf}: {e}")
-        return pd.DataFrame()
+# Calculate indicators
+df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+df['macd'] = ta.trend.MACD(df['close']).macd_diff()
+df['ema9'] = ta.trend.EMAIndicator(df['close'], window=9).ema_indicator()
+df['ema21'] = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator()
+df['ema50'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
+df['ema200'] = ta.trend.EMAIndicator(df['close'], window=200).ema_indicator()
+df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close']).average_true_range()
+df['stoch_rsi'] = ta.momentum.StochRSIIndicator(df['close']).stochrsi_k()
+df['v_spike'] = df['volume'] > (df['volume'].rolling(20).mean() + 2 * df['volume'].rolling(20).std())
 
-data = fetch_ohlcv(symbol, timeframe)
+# Plotting
+fig = go.Figure()
 
-if not data.empty:
-    st.subheader(f"Live chart: {symbol} – {timeframe}")
-    
-    fig = go.Figure(data=[
-        go.Candlestick(
-            x=data['timestamp'],
-            open=data['open'],
-            high=data['high'],
-            low=data['low'],
-            close=data['close'],
-            name='Candles'
-        )
-    ])
-    fig.update_layout(xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+# Candlesticks
+fig.add_trace(go.Candlestick(
+    x=df['timestamp'], open=df['open'], high=df['high'],
+    low=df['low'], close=df['close'], name='Candles'))
 
-    # Live price
-    latest_price = data['close'].iloc[-1]
-    st.metric(label="Live Price", value=f"{latest_price:.4f} USDT")
+# EMA lines
+fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema9'], name="EMA 9", line=dict(color="blue")))
+fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema21'], name="EMA 21", line=dict(color="orange")))
+fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema50'], name="EMA 50", line=dict(color="green")))
+fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema200'], name="EMA 200", line=dict(color="purple")))
 
-    # Countdown timer for next candle
-    now = pd.Timestamp.utcnow()
-    tf_minutes = int(timeframe[:-1]) if 'm' in timeframe else int(timeframe[:-1]) * 60 if 'h' in timeframe else 1440
-    last_timestamp = data['timestamp'].iloc[-1]
-    next_candle = last_timestamp + timedelta(minutes=tf_minutes)
+# Volume spikes
+spike_times = df[df['v_spike']]['timestamp']
+spike_prices = df[df['v_spike']]['close']
+fig.add_trace(go.Scatter(
+    x=spike_times, y=spike_prices,
+    mode="markers", marker=dict(color="red", size=8),
+    name="Volume Spike"))
 
-    if pd.notnull(next_candle):
-        remaining = (next_candle - now).total_seconds()
-        remaining = max(0, remaining)
-        mins, secs = divmod(int(remaining), 60)
-        st.info(f"⏳ Time until next candle: {mins:02d}:{secs:02d}")
-    else:
-        st.warning("Next candle time unavailable.")
-else:
-    st.warning("No data available to display chart.")
+fig.update_layout(height=700, xaxis_rangeslider_visible=False)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# Extra charts: RSI, MACD, ATR, Stochastic RSI
+st.subheader("📊 Indicators")
+
+st.line_chart(df.set_index("timestamp")[["rsi"]], height=200)
+st.line_chart(df.set_index("timestamp")[["macd"]], height=200)
+st.line_chart(df.set_index("timestamp")[["atr"]], height=200)
+st.line_chart(df.set_index("timestamp")[["stoch_rsi"]], height=200)
